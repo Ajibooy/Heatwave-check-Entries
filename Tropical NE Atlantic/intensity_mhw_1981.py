@@ -93,5 +93,4 @@ cbar = fig.colorbar(
 )
 
 cbar.set_label("Mean Intensity (°C above P90)", fontsize=11)
-
 plt.show()
