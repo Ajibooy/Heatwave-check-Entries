@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from scipy.ndimage import label
+import matplotlib.colors as mcolors
 
 # Paths
 sst_path = r"C:/Users/Aina Ajibola/Desktop/oisst_data/1981*_oisst.nc"
@@ -47,8 +48,9 @@ def count_mhw_events(x):
         if duration >= 5:
             count += 1
 
-    return count
+    return int(count)
 
+# Apply MHW frequency calculation
 mhw_frequency = xr.apply_ufunc(
     count_mhw_events,
     exceed,
@@ -56,10 +58,10 @@ mhw_frequency = xr.apply_ufunc(
     vectorize=True,
     dask="parallelized",
     dask_gufunc_kwargs={"allow_rechunk": True},
-    output_dtypes=[float]
+    output_dtypes=[float]  # Use float for internal calculation, but cast later
 )
 
-mhw_frequency.name = "mhw_frequency_1981"
+mhw_frequency = mhw_frequency.compute()
 
 # Summary statistics
 total_grid_cell_events = int(mhw_frequency.sum(skipna=True).values)
@@ -72,16 +74,22 @@ print("Total grid-cell MHW events:", total_grid_cell_events)
 print("Maximum events at one grid cell:", max_events_at_one_cell)
 print("Number of affected grid cells:", affected_grid_cells)
 
-# Plot
+# Create a custom colormap (light blue for 0, dark red for 5)
+colors = ["lightblue", "yellow", "orange", "red", "darkred"]
+n_bins = 5  # Discrete bins for MHW count (0, 1, 2, 3, 4, 5)
+cmap = mcolors.ListedColormap(colors)
+bounds = [0, 1, 2, 3, 4, 5]  # MHW event counts as discrete levels
+norm = mcolors.BoundaryNorm(bounds, cmap.N)
+
+# Plot with the custom colormap
 fig = plt.figure(figsize=(11, 6), constrained_layout=True)
 ax = plt.axes(projection=ccrs.PlateCarree())
 
 plot = mhw_frequency.plot(
     ax=ax,
     transform=ccrs.PlateCarree(),
-    cmap="hot_r",
-    vmin=0,
-    vmax=5,
+    cmap=cmap,  # Custom discrete colormap
+    norm=norm,  # Apply the custom bounds
     add_colorbar=False
 )
 
