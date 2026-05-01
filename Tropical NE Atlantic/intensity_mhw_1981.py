@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+from scipy.ndimage import label
 
 # Paths
 sst_path = r"C:/Users/Aina Ajibola/Desktop/oisst_data/1981*_oisst.nc"
@@ -36,7 +37,7 @@ exceed = sst > p90_1981
 intensity = sst - p90_1981
 
 # Keep intensity only on heatwave/exceedance days
-intensity = intensity.where(exceed)
+intensity = intensity.where(exceed, 0)  # Mask out non-MHW events as 0
 
 # Mean intensity per grid cell
 mean_intensity = intensity.mean(dim="time", skipna=True)
@@ -70,7 +71,7 @@ ax = plt.axes(projection=ccrs.PlateCarree())
 plot = mean_intensity.plot(
     ax=ax,
     transform=ccrs.PlateCarree(),
-    cmap="hot_r",
+    cmap="YlOrRd",  # Suitable colormap for intensity
     add_colorbar=False
 )
 
