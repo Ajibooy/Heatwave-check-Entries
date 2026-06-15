@@ -1,0 +1,138 @@
+import xarray as xr
+import numpy as np
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+# =============================
+# 1. Settings
+# =============================
+year = 2000
+sst_folder = r"C:/Users/Aina Ajibola/Desktop/oisst_data"
+p90_file = r"C:/Users/Aina Ajibola/Desktop/P90_1981-2010/threshold.nc"
+# =============================
+# 2. Load SST and P90
+# =============================
+print("Loading SST files...")
+sst_ds = xr.open_mfdataset(
+    f"{sst_folder}/{year}*.nc",
+    combine="by_coords"
+)
+p90_ds = xr.open_dataset(p90_file)
+print("Files loaded.")
+# =============================
+# 3. Extract variables and remove zlev
+# =============================
+sst = sst_ds["sst"].isel(zlev=0, drop=True)
+p90 = p90_ds["p90_threshold"].isel(zlev=0, drop=True)
+# =============================
+# 4. Match SST region to P90 grid
+# =============================
+sst = sst.sel(
+    lat=slice(0, 30),
+    lon=slice(300, 350)
+)
+sst = sst.sel(
+    lat=p90.lat,
+    lon=p90.lon
+)
+sst = sst.transpose("time", "lat", "lon")
+p90 = p90.transpose("dayofyear", "lat", "lon")
+print("SST shape:", sst.shape)
+print("P90 shape:", p90.shape)
+# =============================
+# 5. Match daily P90 to SST dates
+# =============================
+sst = sst.assign_coords(
+    dayofyear=sst["time"].dt.dayofyear
+)
+p90_for_year = p90.sel(
+    dayofyear=sst["dayofyear"]
+)
+p90_for_year = p90_for_year.assign_coords(
+    time=sst["time"]
+)
+p90_for_year = p90_for_year.transpose("time", "lat", "lon")
+# =============================
+# 6. Daily exceedance
+# =============================
+above_p90 = (sst > p90_for_year).compute()
+# =============================
+# 7. Mean duration function
+# =============================
+def mean_duration_1d(arr):
+    """
+    Counts only events where SST > P90 lasts at least 5 consecutive days.
+    Returns mean duration of valid MHW events.
+    """
+    arr = np.asarray(arr)
+    arr = np.nan_to_num(arr, nan=False).astype(bool)
+    durations = []
+    n = len(arr)
+    i = 0
+    while i < n:
+        if arr[i]:
+            start = i
+            while i < n and arr[i]:
+                i += 1
+            end = i
+            duration = end - start
+            if duration >= 5:
+                durations.append(duration)
+        else:
+            i += 1
+    if len(durations) == 0:
+        return np.nan
+    return float(np.mean(durations))
+
+# =============================
+# 8. Calculate mean MHW duration
+# =============================
+print("Calculating mean MHW duration...")
+mean_mhw_duration = xr.apply_ufunc(
+    mean_duration_1d,
+    above_p90,
+    input_core_dims=[["time"]],
+    vectorize=True,
+    output_dtypes=[float]
+)
+print("Mean MHW duration calculated.")
+# =============================
+# 9. Summary statistics
+# =============================
+print("=================================")
+print(f"Mean MHW Duration Summary: {year}")
+print("=================================")
+print(f"Minimum mean duration: {float(mean_mhw_duration.min(skipna=True)):.2f} days")
+print(f"Maximum mean duration: {float(mean_mhw_duration.max(skipna=True)):.2f} days")
+print(f"Average mean duration over domain: {float(mean_mhw_duration.mean(skipna=True)):.2f} days")
+# =============================
+# 10. Plot mean MHW duration
+# =============================
+fig = plt.figure(figsize=(10, 6))
+ax = plt.axes(projection=ccrs.PlateCarree())
+pcm = mean_mhw_duration.plot(
+    ax=ax,
+    transform=ccrs.PlateCarree(),
+    cmap="hot_r",
+    add_colorbar=False,
+    vmin=5,
+    vmax=float(mean_mhw_duration.max(skipna=True))
+)
+ax.coastlines()
+ax.add_feature(cfeature.LAND, facecolor="lightgray")
+gl = ax.gridlines(draw_labels=True)
+gl.top_labels = False
+gl.right_labels = False
+cbar = plt.colorbar(
+    pcm,
+    ax=ax,
+    orientation="horizontal",
+    pad=0.08,
+    fraction=0.05
+)
+cbar.set_label("Mean MHW Duration (days)")
+plt.title(
+    f"Mean Marine Heatwave Duration Based on Daily SST > Daily P90 ({year})"
+)
+plt.tight_layout()
+plt.show()
