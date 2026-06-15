@@ -1,0 +1,61 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+# =============================
+# 1. Load CSV
+# =============================
+csv_file = r"C:/Users/Aina Ajibola/Desktop/mhw_events_1981_2024.csv"
+df = pd.read_csv(csv_file)
+# =============================
+# 2. Keep needed columns
+# =============================
+df = df[["season", "duration_days"]].copy()
+# Remove missing values
+df = df.dropna(subset=["season", "duration_days"])
+# =============================
+# 3. Season order
+# =============================
+season_order = ["DJF", "MAM", "JJA", "SON"]
+duration_data = [
+    df.loc[df["season"] == season, "duration_days"]
+    for season in season_order
+]
+# =============================
+# 4. Plot duration by season
+# =============================
+plt.figure(figsize=(10, 6))
+plt.boxplot(
+    duration_data,
+    labels=season_order,
+    showfliers=False
+)
+plt.yscale("log")
+plt.title("Marine Heatwave Duration by Season (1981–2024)")
+plt.xlabel("Season")
+plt.ylabel("Duration (days, log scale)")
+plt.grid(axis="y", alpha=0.3)
+plt.tight_layout()
+plt.show()
+# =============================
+# 5. Summary statistics
+# =============================
+season_stats = (
+    df.groupby("season")["duration_days"]
+    .describe()
+    .reindex(season_order)
+)
+print("====================================")
+print("MHW Duration Statistics by Season")
+print("====================================")
+print(
+    season_stats[
+        ["count", "mean", "50%", "min", "max"]
+    ]
+)
+# Optional: rename 50% to median
+season_stats = season_stats.rename(columns={"50%": "median"})
+print("\nClean summary:")
+print(
+    season_stats[
+        ["count", "mean", "median", "min", "max"]
+    ]
+)
