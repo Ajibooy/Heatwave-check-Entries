@@ -1,0 +1,64 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+# =============================
+# Load CSV
+# =============================
+df = pd.read_csv(
+    r"C:/Users/Aina Ajibola/Desktop/mhw_events_1981_2024.csv"
+)
+# =============================
+# Annual frequency
+# =============================
+annual_frequency = (
+    df.groupby("start_year")
+      .size()
+)
+# =============================
+# Annual average max intensity
+# =============================
+annual_max_intensity = (
+    df.groupby("start_year")["max_intensity"]
+      .mean()
+)
+# =============================
+# Plot
+# =============================
+fig, axes = plt.subplots(
+    1, 2,
+    figsize=(14, 5)
+)
+# -----------------------------
+# Frequency
+# -----------------------------
+axes[0].plot(
+    annual_frequency.index,
+    annual_frequency.values,
+    marker="o",
+    linewidth=1
+)
+axes[0].set_title(
+    "Number of MHW Events by Year"
+)
+
+
+axes[0].set_xlabel("Year")
+axes[0].set_ylabel("Count")
+axes[0].grid(True, alpha=0.3)
+# -----------------------------
+# Intensity
+# -----------------------------
+axes[1].plot(
+    annual_max_intensity.index,
+    annual_max_intensity.values,
+    marker="o",
+    linewidth=1
+)
+axes[1].set_title(
+    "Average MHW Maximum Intensity by Year"
+)
+axes[1].set_xlabel("Year")
+axes[1].set_ylabel("°C")
+axes[1].grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
+
