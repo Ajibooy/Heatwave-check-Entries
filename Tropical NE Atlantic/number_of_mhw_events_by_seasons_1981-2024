@@ -1,0 +1,41 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+# =============================
+# Load CSV
+# =============================
+df = pd.read_csv(
+    r"C:/Users/Aina Ajibola/Desktop/mhw_events_1981_2024.csv"
+)
+# =============================
+# Count events by season
+# =============================
+season_order = ["DJF", "MAM", "JJA", "SON"]
+season_counts = (
+    df["season"]
+    .value_counts()
+    .reindex(season_order)
+)
+print(season_counts)
+# =============================
+# Plot
+# =============================
+plt.figure(figsize=(8, 5))
+plt.bar(
+    season_counts.index,
+    season_counts.values
+)
+plt.title(
+    "Number of Marine Heatwave Events by Season (1981–2024)"
+)
+plt.xlabel("Season")
+plt.ylabel("Number of MHW Events")
+plt.grid(
+    axis="y",
+    linestyle="--",
+    alpha=0.4
+)
+plt.tight_layout()
+plt.show()
+
+
+
