@@ -1,0 +1,171 @@
+import xarray as xr
+import numpy as np
+import pandas as pd
+import os
+
+# =========================
+# Paths
+# =========================
+sst_path = r"C:/Users/Aina Ajibola/Desktop/oisst_data/*_oisst.nc"
+p90_path = r"C:/Users/Aina Ajibola/Desktop/P90_1981-2010/threshold.nc"
+output_csv = r"C:/Users/Aina Ajibola/Desktop/mhw_events_1981_2024.csv"
+
+# =========================
+# Settings
+# =========================
+start_year = 1981
+end_year = 2024
+min_duration = 5
+
+lat_min, lat_max = 0, 30
+lon_min, lon_max = -80, -15
+
+# =========================
+# Helper functions
+# =========================
+def season_from_month(month):
+    if month in [12, 1, 2]:
+        return "DJF"
+    elif month in [3, 4, 5]:
+        return "MAM"
+    elif month in [6, 7, 8]:
+        return "JJA"
+    else:
+        return "SON"
+
+
+def detect_mhw_events(mask_1d, intensity_1d, times, min_duration=5):
+    mask_1d = np.asarray(mask_1d, dtype=bool)
+    intensity_1d = np.asarray(intensity_1d, dtype=float)
+
+    exceed_idx = np.where(mask_1d)[0]
+    if len(exceed_idx) == 0:
+        return []
+
+    breaks = np.where(np.diff(exceed_idx) > 1)[0]
+    starts = np.insert(exceed_idx[breaks + 1], 0, exceed_idx[0])
+    ends = np.append(exceed_idx[breaks], exceed_idx[-1])
+
+    events = []
+    for start_idx, end_idx in zip(starts, ends):
+        duration = end_idx - start_idx + 1
+        if duration < min_duration:
+            continue
+
+        event_intensity = intensity_1d[start_idx:end_idx + 1]
+        if np.all(np.isnan(event_intensity)):
+            continue
+
+        peak_offset = np.nanargmax(event_intensity)
+        peak_idx = start_idx + peak_offset
+
+        start_date = times[start_idx]
+        end_date = times[end_idx]
+        peak_date = times[peak_idx]
+
+        events.append({
+            "start_date": start_date,
+            "end_date": end_date,
+            "peak_date": peak_date,
+            "start_year": start_date.year,
+            "end_year": end_date.year,
+            "duration_days": duration,
+            "start_doy": start_date.dayofyear,
+            "end_doy": end_date.dayofyear,
+            "peak_doy": peak_date.dayofyear,
+            "month": start_date.month,
+            "season": season_from_month(start_date.month),
+            "mean_intensity": float(np.nanmean(event_intensity)),
+            "max_intensity": float(np.nanmax(event_intensity)),
+            "cumulative_intensity": float(np.nansum(event_intensity))
+        })
+
+    return events
+
+# =========================
+# Load datasets
+# =========================
+sst_ds = xr.open_mfdataset(sst_path, combine="by_coords", chunks={"time": 365})
+p90_ds = xr.open_dataset(p90_path)
+
+sst = sst_ds["sst"].squeeze(drop=True)
+p90 = p90_ds["p90_threshold"].squeeze(drop=True)
+
+# Convert longitude if needed
+if float(sst.lon.max()) > 180:
+    sst = sst.assign_coords(lon=(((sst.lon + 180) % 360) - 180)).sortby("lon")
+if float(p90.lon.max()) > 180:
+    p90 = p90.assign_coords(lon=(((p90.lon + 180) % 360) - 180)).sortby("lon")
+
+# Select time and region
+sst = sst.sel(time=slice(f"{start_year}-01-01", f"{end_year}-12-31"),
+              lat=slice(lat_min, lat_max),
+              lon=slice(lon_min, lon_max))
+p90 = p90.sel(lat=slice(lat_min, lat_max), lon=slice(lon_min, lon_max))
+
+# Match P90 to SST day-of-year
+doy_index = xr.DataArray(sst.time.dt.dayofyear.values - 1, dims="time", coords={"time": sst.time})
+p90_period = p90.isel(dayofyear=doy_index).assign_coords(time=sst.time)
+
+# Align dimensions
+sst = sst.transpose("time", "lat", "lon")
+p90_period = p90_period.transpose("time", "lat", "lon")
+sst, p90_period = xr.align(sst, p90_period, join="inner")
+
+# Exceedance and intensity
+exceed = sst > p90_period
+intensity = (sst - p90_period).where(exceed)
+times = pd.to_datetime(exceed.time.values)
+
+n_lat = exceed.sizes["lat"]
+n_lon = exceed.sizes["lon"]
+
+# =========================
+# Resume support
+# =========================
+if os.path.exists(output_csv):
+    done_events = pd.read_csv(output_csv)
+    processed_lats = set(done_events['lat'].unique())
+    print(f"Resuming: already processed {len(processed_lats)} latitudes")
+else:
+    done_events = pd.DataFrame()
+    processed_lats = set()
+
+# =========================
+# Detection loop
+# =========================
+event_counter = done_events["event_id"].max() if not done_events.empty else 0
+
+for lat_idx in range(n_lat):
+    current_lat = float(exceed.lat.values[lat_idx])
+    if current_lat in processed_lats:
+        print(f"Skipping latitude {current_lat} (already processed)")
+        continue
+
+    print(f"Processing latitude {lat_idx+1}/{n_lat} -> {current_lat}")
+
+    exceed_lat = exceed.isel(lat=lat_idx).load()
+    intensity_lat = intensity.isel(lat=lat_idx).load()
+    records_for_lat = []
+
+    for lon_idx in range(n_lon):
+        mask_1d = exceed_lat.isel(lon=lon_idx).values
+        intensity_1d = intensity_lat.isel(lon=lon_idx).values
+        if not np.any(mask_1d):
+            continue
+
+        events = detect_mhw_events(mask_1d, intensity_1d, times, min_duration)
+        for event in events:
+            event_counter += 1
+            event["event_id"] = event_counter
+            event["lat"] = current_lat
+            event["lon"] = float(exceed.lon.values[lon_idx])
+            records_for_lat.append(event)
+
+    # Append latitude results to CSV
+    if records_for_lat:
+        df_lat = pd.DataFrame(records_for_lat)
+        if os.path.exists(output_csv):
+            df_lat.to_csv(output_csv, mode='a', header=False, index=False)
+        else:
+            df_lat.to_csv(output_csv, index=False)
