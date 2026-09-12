@@ -15,19 +15,17 @@
 #   SON = September-October-November
 #
 # Output:
-#   Four panels:
-#       (a) DJF
-#       (b) MAM
-#       (c) JJA
-#       (d) SON
+#   Four seasonal panels
 #
-# No trend line
-# No °C/decade
-# No R²
-# No p-value
-#
-# Regional SST uses cosine(latitude) area weighting.
+# IMPORTANT:
+#   - Mean SST values displayed on ALL four y-axes
+#   - Same y-axis range for all panels
+#   - No trend line
+#   - No °C/decade
+#   - No R²
+#   - No p-value
 # ==============================================================
+
 
 import os
 import glob
@@ -53,7 +51,7 @@ LAT_MAX = 30.0
 LON_MIN = -60.0
 LON_MAX = -10.0
 
-# Need December 1981 for DJF 1982
+# December 1981 is needed for DJF 1982
 START_DATE = "1981-12-01"
 END_DATE = "2024-12-31"
 
@@ -82,7 +80,10 @@ def preprocess(ds):
     if rename:
         ds = ds.rename(rename)
 
+    # ----------------------------------------------------------
     # Remove singleton vertical dimensions
+    # ----------------------------------------------------------
+
     for dim in [
         "zlev",
         "depth",
@@ -94,19 +95,28 @@ def preprocess(ds):
             dim in ds.dims
             and ds.sizes[dim] == 1
         ):
+
             ds = ds.squeeze(
                 dim,
                 drop=True
             )
 
+    # ----------------------------------------------------------
+    # Check SST variable
+    # ----------------------------------------------------------
+
     if "sst" not in ds.data_vars:
+
         raise KeyError(
-            "Variable 'sst' was not found."
+            "Variable 'sst' was not found in the OISST files."
         )
 
     ds = ds[["sst"]]
 
-    # Convert longitude 0-360 -> -180...180
+    # ----------------------------------------------------------
+    # Convert longitude from 0-360 to -180...180 if necessary
+    # ----------------------------------------------------------
+
     if float(ds.lon.max()) > 180:
 
         ds = ds.assign_coords(
@@ -116,7 +126,10 @@ def preprocess(ds):
     ds = ds.sortby("lat")
     ds = ds.sortby("lon")
 
+    # ----------------------------------------------------------
     # Tropical North East Atlantic
+    # ----------------------------------------------------------
+
     ds = ds.sel(
         lat=slice(
             LAT_MIN,
@@ -132,9 +145,9 @@ def preprocess(ds):
 
 
 # ==============================================================
-# 3. SAFE SEASON FUNCTION
+# 3. SEASON ASSIGNMENT
 #
-# This completely avoids the np.select() dtype error.
+# Avoids the np.select string/integer dtype problem.
 # ==============================================================
 
 def assign_season(month):
@@ -151,12 +164,11 @@ def assign_season(month):
     elif month in [9, 10, 11]:
         return "SON"
 
-    else:
-        return "Unknown"
+    return "Unknown"
 
 
 # ==============================================================
-# 4. FIND FILES
+# 4. FIND OISST FILES
 # ==============================================================
 
 files = sorted(
@@ -182,7 +194,7 @@ if not files:
 if not files:
 
     raise FileNotFoundError(
-        f"No NetCDF files found in:\n{DATA_DIR}"
+        f"No NetCDF files were found in:\n{DATA_DIR}"
     )
 
 
@@ -196,23 +208,20 @@ print(
 print("=" * 80)
 
 print(
-    f"\nSST files found: "
-    f"{len(files):,}"
+    f"\nSST files found: {len(files):,}"
 )
 
 print(
-    f"First file: "
-    f"{os.path.basename(files[0])}"
+    f"First file: {os.path.basename(files[0])}"
 )
 
 print(
-    f"Last file: "
-    f"{os.path.basename(files[-1])}"
+    f"Last file:  {os.path.basename(files[-1])}"
 )
 
 
 # ==============================================================
-# 5. OPEN OISST
+# 5. OPEN OISST DATA
 # ==============================================================
 
 print(
@@ -234,13 +243,9 @@ ds = xr.open_mfdataset(
     }
 )
 
-ds = ds.sortby(
-    "time"
-)
+ds = ds.sortby("time")
 
-sst = ds[
-    "sst"
-]
+sst = ds["sst"]
 
 
 # ==============================================================
@@ -259,7 +264,10 @@ time_index = pd.DatetimeIndex(
     sst.time.values
 )
 
-# Remove duplicates
+# --------------------------------------------------------------
+# Remove duplicate dates
+# --------------------------------------------------------------
+
 keep = np.where(
     ~time_index.duplicated(
         keep="first"
@@ -270,13 +278,11 @@ sst = sst.isel(
     time=keep
 )
 
-sst = sst.sortby(
-    "time"
-)
+sst = sst.sortby("time")
 
 
 # ==============================================================
-# 7. SELECT PERIOD
+# 7. SELECT ANALYSIS PERIOD
 # ==============================================================
 
 sst = sst.sel(
@@ -293,19 +299,16 @@ dates = pd.DatetimeIndex(
 
 print(
     f"\nAvailable period: "
-    f"{dates[0].date()} to "
-    f"{dates[-1].date()}"
+    f"{dates[0].date()} to {dates[-1].date()}"
 )
 
 print(
-    f"Number of days: "
-    f"{len(dates):,}"
+    f"Number of days: {len(dates):,}"
 )
 
 print(
     f"Grid: "
-    f"{sst.sizes['lat']} × "
-    f"{sst.sizes['lon']}"
+    f"{sst.sizes['lat']} × {sst.sizes['lon']}"
 )
 
 
@@ -329,17 +332,14 @@ sample = float(
     .compute()
 )
 
+
 if sample > 100:
 
     print(
         "\nConverting SST from Kelvin to °C..."
     )
 
-    sst = (
-        sst
-        -
-        273.15
-    )
+    sst = sst - 273.15
 
 else:
 
@@ -349,18 +349,29 @@ else:
 
 
 # ==============================================================
-# 9. AREA-WEIGHTED REGIONAL DAILY SST
+# 9. AREA-WEIGHTED REGIONAL DAILY MEAN SST
 # ==============================================================
 
 print(
     "\nCalculating area-weighted regional daily SST..."
 )
 
+# --------------------------------------------------------------
+# Latitude weighting
+# --------------------------------------------------------------
+
 weights = np.cos(
     np.deg2rad(
         sst.lat
     )
 )
+
+
+# --------------------------------------------------------------
+# Average longitude first.
+#
+# Then calculate cosine-latitude weighted mean across latitude.
+# --------------------------------------------------------------
 
 regional_daily = (
     sst
@@ -377,18 +388,16 @@ regional_daily = (
     )
 )
 
+
 print(
     "Loading regional daily SST..."
 )
 
-regional_daily = (
-    regional_daily
-    .compute()
-)
+regional_daily = regional_daily.compute()
 
 
 # ==============================================================
-# 10. CREATE DATAFRAME
+# 10. CREATE DAILY DATAFRAME
 # ==============================================================
 
 df = pd.DataFrame(
@@ -405,21 +414,29 @@ df = pd.DataFrame(
     }
 )
 
+
 df = df.dropna(
     subset=["sst"]
 )
 
 
+print(
+    f"\nValid daily regional SST values: {len(df):,}"
+)
+
+
 # ==============================================================
-# 11. ASSIGN SEASON
-#
-# Safe method:
-# apply the assign_season() function month-by-month.
+# 11. MONTH
 # ==============================================================
 
 df["month"] = (
     df["date"].dt.month
 )
+
+
+# ==============================================================
+# 12. ASSIGN SEASON
+# ==============================================================
 
 df["season"] = (
     df["month"]
@@ -429,19 +446,6 @@ df["season"] = (
 )
 
 
-# ==============================================================
-# 12. CHECK SEASON ASSIGNMENT
-# ==============================================================
-
-print(
-    "\nSeason assignment counts:"
-)
-
-print(
-    df["season"]
-    .value_counts()
-)
-
 if (
     df["season"]
     ==
@@ -449,26 +453,31 @@ if (
 ).any():
 
     raise ValueError(
-        "Some dates were not assigned to a season."
+        "Some dates could not be assigned to a season."
     )
 
 
 # ==============================================================
-# 13. SEASON YEAR
+# 13. DEFINE SEASON YEAR
 # ==============================================================
 
-df[
-    "season_year"
-] = (
+df["season_year"] = (
     df["date"].dt.year
 )
 
 
 # --------------------------------------------------------------
-# December belongs to the following DJF year.
+# DJF requires special treatment.
+#
+# December belongs to the NEXT year.
 #
 # Example:
-# Dec 1999 + Jan 2000 + Feb 2000 = DJF 2000
+#
+# December 2009
+# January 2010
+# February 2010
+#
+# = DJF 2010
 # --------------------------------------------------------------
 
 december_mask = (
@@ -484,7 +493,7 @@ df.loc[
 
 
 # ==============================================================
-# 14. COUNT DAYS IN EACH SEASON
+# 14. COUNT VALID DAYS IN EACH SEASON
 # ==============================================================
 
 season_counts = (
@@ -501,11 +510,13 @@ season_counts = (
 
 
 # ==============================================================
-# 15. KEEP COMPLETE SEASONS ONLY
+# 15. KEEP COMPLETE SEASONS
+#
+# Seasons contain about 90-92 days.
+#
+# >=89 prevents substantially incomplete seasons from entering
+# the calculation.
 # ==============================================================
-
-# Seasons normally contain 90-92 days.
-# Requiring >=89 prevents incomplete seasons being used.
 
 complete_seasons = (
     season_counts[
@@ -516,7 +527,7 @@ complete_seasons = (
 
 
 # ==============================================================
-# 16. CALCULATE MEAN SST FOR EACH SEASON/YEAR
+# 16. CALCULATE SEASONAL MEAN SST
 # ==============================================================
 
 seasonal_sst = (
@@ -553,17 +564,13 @@ seasonal_sst = (
 
 seasonal_sst = seasonal_sst[
     (
-        seasonal_sst[
-            "season_year"
-        ]
+        seasonal_sst["season_year"]
         >=
         START_YEAR
     )
     &
     (
-        seasonal_sst[
-            "season_year"
-        ]
+        seasonal_sst["season_year"]
         <=
         END_YEAR
     )
@@ -571,7 +578,7 @@ seasonal_sst = seasonal_sst[
 
 
 # ==============================================================
-# 18. PRINT SEASONAL TABLE
+# 18. SEASON ORDER
 # ==============================================================
 
 season_order = [
@@ -580,6 +587,11 @@ season_order = [
     "JJA",
     "SON"
 ]
+
+
+# ==============================================================
+# 19. PRINT RESULTS
+# ==============================================================
 
 seasonal_table = (
     seasonal_sst
@@ -608,40 +620,56 @@ print(
 )
 
 print(
-    seasonal_table.round(
-        3
-    )
+    seasonal_table.round(3)
 )
 
 
 # ==============================================================
-# 19. CHECK AVAILABLE YEARS
+# 20. CHECK EACH SEASON
 # ==============================================================
 
 print(
-    "\nAvailable years per season:"
+    "\n"
+    + "=" * 80
 )
+
+print(
+    "AVAILABLE SEASONS"
+)
+
+print(
+    "=" * 80
+)
+
 
 for season in season_order:
 
-    season_data = seasonal_sst[
-        seasonal_sst[
-            "season"
-        ]
+    temp = seasonal_sst[
+        seasonal_sst["season"]
         ==
         season
     ]
 
-    print(
-        f"{season}: "
-        f"{season_data['season_year'].min()}-"
-        f"{season_data['season_year'].max()} | "
-        f"{len(season_data)} seasons"
-    )
+    if len(temp) > 0:
+
+        print(
+            f"{season}: "
+            f"{int(temp['season_year'].min())}-"
+            f"{int(temp['season_year'].max())} "
+            f"({len(temp)} seasons)"
+        )
 
 
 # ==============================================================
-# 20. COMMON Y-AXIS RANGE
+# 21. CALCULATE COMMON Y-AXIS RANGE
+#
+# IMPORTANT:
+#
+# All four panels use exactly the same scale.
+#
+# This means a temperature difference visible between DJF and
+# SON, for example, is a genuine difference rather than an
+# artifact caused by different y-axis ranges.
 # ==============================================================
 
 all_sst = (
@@ -652,50 +680,63 @@ all_sst = (
 )
 
 
-y_min = (
-    np.floor(
-        np.nanmin(
-            all_sst
-        )
-        *
-        2
+# Use whole-degree tick marks
+tick_min = np.floor(
+    np.nanmin(
+        all_sst
     )
-    /
-    2
-    -
-    0.25
+)
+
+tick_max = np.ceil(
+    np.nanmax(
+        all_sst
+    )
 )
 
 
-y_max = (
-    np.ceil(
-        np.nanmax(
-            all_sst
-        )
-        *
-        2
-    )
-    /
-    2
-    +
-    0.25
+# Give a little visual space above and below
+y_min = tick_min - 0.25
+y_max = tick_max + 0.75
+
+
+# Explicit y-axis ticks
+y_ticks = np.arange(
+    tick_min,
+    tick_max + 1,
+    1.0
+)
+
+
+print(
+    f"\nCommon plot range: "
+    f"{y_min:.2f} to {y_max:.2f} °C"
 )
 
 
 # ==============================================================
-# 21. FOUR-PANEL FIGURE
+# 22. CREATE FOUR-PANEL FIGURE
+#
+# IMPORTANT:
+#
+# sharey=False is deliberate here.
+#
+# We manually give every plot the SAME ylim and yticks.
+#
+# This retains scientific comparability while ensuring that
+# MAM and SON also display their y-axis temperature labels.
 # ==============================================================
 
 fig, axes = plt.subplots(
     2,
     2,
     figsize=(
-        15,
-        10
+        14,
+        8
     ),
     sharex=True,
-    sharey=True
+    sharey=False
 )
+
 
 axes = axes.flatten()
 
@@ -709,7 +750,18 @@ panel_labels = [
 
 
 # ==============================================================
-# 22. PLOT EACH SEASON
+# 23. YEAR TICKS
+# ==============================================================
+
+year_ticks = np.arange(
+    1982,
+    2025,
+    5
+)
+
+
+# ==============================================================
+# 24. PLOT ALL FOUR SEASONS
 # ==============================================================
 
 for ax, season, panel in zip(
@@ -718,11 +770,13 @@ for ax, season, panel in zip(
     panel_labels
 ):
 
+    # ----------------------------------------------------------
+    # Extract season
+    # ----------------------------------------------------------
+
     season_data = (
         seasonal_sst[
-            seasonal_sst[
-                "season"
-            ]
+            seasonal_sst["season"]
             ==
             season
         ]
@@ -731,12 +785,14 @@ for ax, season, panel in zip(
         )
     )
 
+
     years = (
         season_data[
             "season_year"
         ]
         .to_numpy()
     )
+
 
     mean_sst = (
         season_data[
@@ -745,8 +801,9 @@ for ax, season, panel in zip(
         .to_numpy()
     )
 
+
     # ----------------------------------------------------------
-    # Seasonal SST line only
+    # Seasonal mean SST
     # ----------------------------------------------------------
 
     ax.plot(
@@ -755,6 +812,11 @@ for ax, season, panel in zip(
         linewidth=1.8
     )
 
+
+    # ----------------------------------------------------------
+    # Panel title
+    # ----------------------------------------------------------
+
     ax.set_title(
         f"{panel} {season}",
         fontsize=13,
@@ -762,37 +824,84 @@ for ax, season, panel in zip(
         pad=10
     )
 
+
+    # ----------------------------------------------------------
+    # X axis
+    # ----------------------------------------------------------
+
     ax.set_xlim(
         START_YEAR,
         END_YEAR
     )
+
+    ax.set_xticks(
+        year_ticks
+    )
+
+
+    # ----------------------------------------------------------
+    # Y axis
+    #
+    # SAME range on ALL four panels
+    # ----------------------------------------------------------
 
     ax.set_ylim(
         y_min,
         y_max
     )
 
+    ax.set_yticks(
+        y_ticks
+    )
+
+
+    # ----------------------------------------------------------
+    # IMPORTANT FIX
+    #
+    # Explicitly show numerical SST tick labels on every panel.
+    # This fixes MAM and SON.
+    # ----------------------------------------------------------
+
+    ax.tick_params(
+        axis="y",
+        labelleft=True,
+        labelsize=10
+    )
+
+    ax.tick_params(
+        axis="x",
+        labelsize=10
+    )
+
+
+    # ----------------------------------------------------------
+    # Y-axis label on EVERY panel
+    # ----------------------------------------------------------
+
+    ax.set_ylabel(
+        "Mean SST (°C)",
+        fontsize=11,
+        fontweight="bold"
+    )
+
+
+    # ----------------------------------------------------------
+    # Grid
+    # ----------------------------------------------------------
+
     ax.grid(
+        True,
         linestyle="--",
-        alpha=0.3
+        linewidth=0.7,
+        alpha=0.30
     )
 
 
 # ==============================================================
-# 23. AXIS LABELS
+# 25. X-AXIS LABELS
+#
+# Put Year on the bottom panels.
 # ==============================================================
-
-axes[0].set_ylabel(
-    "Mean SST (°C)",
-    fontsize=11,
-    fontweight="bold"
-)
-
-axes[2].set_ylabel(
-    "Mean SST (°C)",
-    fontsize=11,
-    fontweight="bold"
-)
 
 axes[2].set_xlabel(
     "Year",
@@ -808,24 +917,7 @@ axes[3].set_xlabel(
 
 
 # ==============================================================
-# 24. YEAR TICKS
-# ==============================================================
-
-year_ticks = np.arange(
-    1982,
-    2025,
-    5
-)
-
-for ax in axes:
-
-    ax.set_xticks(
-        year_ticks
-    )
-
-
-# ==============================================================
-# 25. OVERALL TITLE
+# 26. OVERALL TITLE
 # ==============================================================
 
 fig.suptitle(
@@ -837,23 +929,36 @@ fig.suptitle(
 )
 
 
-plt.tight_layout(
-    rect=[
-        0,
-        0,
-        1,
-        0.95
-    ]
+# ==============================================================
+# 27. ADJUST PANEL SPACING
+#
+# This provides enough room for the MAM and SON y-axis labels
+# without making the overall figure unnecessarily large.
+# ==============================================================
+
+fig.subplots_adjust(
+    left=0.08,
+    right=0.98,
+    bottom=0.09,
+    top=0.89,
+    wspace=0.18,
+    hspace=0.25
 )
+
+
+# ==============================================================
+# 28. SHOW FIGURE
+# ==============================================================
 
 plt.show()
 
 
 # ==============================================================
-# 26. CLOSE DATASET
+# 29. CLOSE DATASET
 # ==============================================================
 
 ds.close()
+
 
 print(
     "\nSeasonal SST analysis completed successfully."
