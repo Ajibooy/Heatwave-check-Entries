@@ -13,7 +13,6 @@
 #   SON = September, October, November
 #
 # Analysis:
-#   - Area-weighted regional seasonal mean SST
 #   - Linear SST trend for each season
 #   - Trend in °C/decade
 #   - 95% confidence interval
