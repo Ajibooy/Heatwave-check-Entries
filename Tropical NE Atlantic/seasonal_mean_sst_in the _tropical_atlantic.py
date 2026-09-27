@@ -1,31 +1,46 @@
 # ==============================================================
 # TROPICAL NORTH EAST ATLANTIC
-# SEASONAL MEAN SST TIME SERIES
+# SEASONAL MEAN SST AND LINEAR TRENDS
+# 1982–2024
 #
 # Region:
-#   0-30°N, 60-10°W
-#
-# Period:
-#   1982-2024
+#   0–30°N, 60–10°W
 #
 # Seasons:
-#   DJF = December-January-February
-#   MAM = March-April-May
-#   JJA = June-July-August
-#   SON = September-October-November
+#   DJF = December, January, February
+#   MAM = March, April, May
+#   JJA = June, July, August
+#   SON = September, October, November
 #
-# Output:
-#   Four seasonal panels
+# Analysis:
+#   - Area-weighted regional seasonal mean SST
+#   - Linear SST trend for each season
+#   - Trend in °C/decade
+#   - 95% confidence interval
+#   - p-value for each trend
 #
-# IMPORTANT:
-#   - Mean SST values displayed on ALL four y-axes
-#   - Same y-axis range for all panels
-#   - No trend line
-#   - No °C/decade
-#   - No R²
-#   - No p-value
+# Figure:
+#   - All four seasons in ONE plot
+#   - Solid lines = seasonal mean SST
+#   - Dashed lines = linear trends
+#   - Season names directly beside corresponding trend lines
+#   - Statistics box contains:
+#         trend + 95% CI
+#   - If all seasonal trends have p < 0.001,
+#         p < 0.001 is stated only once
+#
+# NO:
+#   - statsmodels
+#   - pairwise seasonal slope comparison
+#   - overall seasonal slope comparison
+#   - CSV output
+#   - saved figure
 # ==============================================================
 
+
+# ==============================================================
+# 0. IMPORT PACKAGES
+# ==============================================================
 
 import os
 import glob
@@ -34,7 +49,12 @@ import warnings
 import numpy as np
 import pandas as pd
 import xarray as xr
+
 import matplotlib.pyplot as plt
+
+from scipy.stats import linregress
+from scipy.stats import t as student_t
+
 
 warnings.filterwarnings("ignore")
 
@@ -45,40 +65,72 @@ warnings.filterwarnings("ignore")
 
 DATA_DIR = r"C:\Users\Aina Ajibola\Desktop\oisst_data"
 
+
+# --------------------------------------------------------------
+# Study region
+# --------------------------------------------------------------
+
 LAT_MIN = 0.0
 LAT_MAX = 30.0
 
 LON_MIN = -60.0
 LON_MAX = -10.0
 
-# December 1981 is needed for DJF 1982
-START_DATE = "1981-12-01"
-END_DATE = "2024-12-31"
+
+# --------------------------------------------------------------
+# Analysis years
+# --------------------------------------------------------------
 
 START_YEAR = 1982
 END_YEAR = 2024
 
 
+# --------------------------------------------------------------
+# December 1981 is required for DJF 1982:
+#
+# DJF 1982 =
+# December 1981 + January 1982 + February 1982
+#
+# December 2024 belongs to DJF 2025,
+# therefore the analysis ends in November 2024.
+# --------------------------------------------------------------
+
+DATA_START_DATE = "1981-12-01"
+DATA_END_DATE = "2024-11-30"
+
+
 # ==============================================================
-# 2. PREPROCESS OISST
+# 2. PREPROCESS EACH OISST FILE
 # ==============================================================
 
 def preprocess(ds):
 
     rename = {}
 
-    for old, new in {
+    coordinate_names = {
+
         "latitude": "lat",
+        "Latitude": "lat",
+        "LATITUDE": "lat",
+
         "longitude": "lon",
+        "Longitude": "lon",
+        "LONGITUDE": "lon",
+
         "Time": "time",
         "TIME": "time"
-    }.items():
+
+    }
+
+    for old, new in coordinate_names.items():
 
         if old in ds.coords or old in ds.dims:
             rename[old] = new
 
+
     if rename:
         ds = ds.rename(rename)
+
 
     # ----------------------------------------------------------
     # Remove singleton vertical dimensions
@@ -101,6 +153,7 @@ def preprocess(ds):
                 drop=True
             )
 
+
     # ----------------------------------------------------------
     # Check SST variable
     # ----------------------------------------------------------
@@ -108,104 +161,117 @@ def preprocess(ds):
     if "sst" not in ds.data_vars:
 
         raise KeyError(
-            "Variable 'sst' was not found in the OISST files."
+            "Variable 'sst' was not found in the OISST file."
         )
+
 
     ds = ds[["sst"]]
 
+
     # ----------------------------------------------------------
-    # Convert longitude from 0-360 to -180...180 if necessary
+    # Convert longitude from 0–360 to -180–180
     # ----------------------------------------------------------
 
     if float(ds.lon.max()) > 180:
 
         ds = ds.assign_coords(
-            lon=((ds.lon + 180.0) % 360.0) - 180.0
+
+            lon=(
+                (ds.lon + 180.0) % 360.0
+            ) - 180.0
+
         )
+
+
+    # ----------------------------------------------------------
+    # Sort coordinates
+    # ----------------------------------------------------------
 
     ds = ds.sortby("lat")
     ds = ds.sortby("lon")
 
+
     # ----------------------------------------------------------
-    # Tropical North East Atlantic
+    # Select Tropical North East Atlantic
     # ----------------------------------------------------------
 
     ds = ds.sel(
+
         lat=slice(
             LAT_MIN,
             LAT_MAX
         ),
+
         lon=slice(
             LON_MIN,
             LON_MAX
         )
+
     )
+
 
     return ds
 
 
 # ==============================================================
-# 3. SEASON ASSIGNMENT
-#
-# Avoids the np.select string/integer dtype problem.
-# ==============================================================
-
-def assign_season(month):
-
-    if month in [12, 1, 2]:
-        return "DJF"
-
-    elif month in [3, 4, 5]:
-        return "MAM"
-
-    elif month in [6, 7, 8]:
-        return "JJA"
-
-    elif month in [9, 10, 11]:
-        return "SON"
-
-    return "Unknown"
-
-
-# ==============================================================
-# 4. FIND OISST FILES
+# 3. FIND OISST FILES
 # ==============================================================
 
 files = sorted(
+
     glob.glob(
+
         os.path.join(
             DATA_DIR,
             "*_oisst.nc"
         )
+
     )
+
 )
+
 
 if not files:
 
     files = sorted(
+
         glob.glob(
+
             os.path.join(
                 DATA_DIR,
                 "*.nc"
             )
+
         )
+
     )
+
 
 if not files:
 
     raise FileNotFoundError(
-        f"No NetCDF files were found in:\n{DATA_DIR}"
+
+        f"No NetCDF files found in:\n{DATA_DIR}"
+
     )
 
 
 print("=" * 80)
 
 print(
-    "TROPICAL NORTH EAST ATLANTIC "
-    "SEASONAL SST ANALYSIS"
+    "TROPICAL NORTH EAST ATLANTIC"
+)
+
+print(
+    "SEASONAL SST TREND ANALYSIS"
+)
+
+print(
+    "1982–2024"
 )
 
 print("=" * 80)
+
 
 print(
     f"\nSST files found: {len(files):,}"
@@ -216,32 +282,45 @@ print(
 )
 
 print(
-    f"Last file:  {os.path.basename(files[-1])}"
+    f"Last file: {os.path.basename(files[-1])}"
 )
 
 
 # ==============================================================
-# 5. OPEN OISST DATA
+# 4. OPEN OISST DATA
 # ==============================================================
 
 print(
     "\nOpening OISST dataset..."
 )
 
+
 ds = xr.open_mfdataset(
+
     files,
+
     combine="by_coords",
+
     preprocess=preprocess,
+
     parallel=False,
+
     data_vars="minimal",
+
     coords="minimal",
+
     compat="override",
+
     join="outer",
+
     engine="netcdf4",
+
     chunks={
         "time": 365
     }
+
 )
+
 
 ds = ds.sortby("time")
 
@@ -249,75 +328,100 @@ sst = ds["sst"]
 
 
 # ==============================================================
-# 6. NORMALIZE TIME
+# 5. NORMALIZE TIME
+#
+# OISST timestamps may occur at noon.
+# Normalize all timestamps to calendar dates.
 # ==============================================================
-
-dates = pd.DatetimeIndex(
-    sst.time.values
-).normalize()
-
-sst = sst.assign_coords(
-    time=dates
-)
 
 time_index = pd.DatetimeIndex(
     sst.time.values
+).normalize()
+
+
+sst = sst.assign_coords(
+    time=time_index
 )
+
 
 # --------------------------------------------------------------
 # Remove duplicate dates
 # --------------------------------------------------------------
 
 keep = np.where(
+
     ~time_index.duplicated(
         keep="first"
     )
+
 )[0]
+
 
 sst = sst.isel(
     time=keep
 )
 
+
 sst = sst.sortby("time")
 
 
 # ==============================================================
-# 7. SELECT ANALYSIS PERIOD
+# 6. SELECT ANALYSIS PERIOD
 # ==============================================================
 
 sst = sst.sel(
+
     time=slice(
-        START_DATE,
-        END_DATE
+        DATA_START_DATE,
+        DATA_END_DATE
     )
+
 )
+
 
 dates = pd.DatetimeIndex(
     sst.time.values
 )
 
 
-print(
-    f"\nAvailable period: "
-    f"{dates[0].date()} to {dates[-1].date()}"
-)
+if len(dates) == 0:
+
+    raise ValueError(
+
+        "No SST observations were found "
+        "during the requested period."
+
+    )
+
 
 print(
-    f"Number of days: {len(dates):,}"
+    f"\nData period used: "
+    f"{dates[0].date()} to "
+    f"{dates[-1].date()}"
 )
 
+
 print(
-    f"Grid: "
-    f"{sst.sizes['lat']} × {sst.sizes['lon']}"
+    f"Number of daily observations: "
+    f"{len(dates):,}"
+)
+
+
+print(
+    f"Regional grid: "
+    f"{sst.sizes['lat']} × "
+    f"{sst.sizes['lon']}"
 )
 
 
 # ==============================================================
-# 8. SST UNIT CHECK
+# 7. SST UNIT CHECK
 # ==============================================================
 
 sample = float(
+
     sst.isel(
+
         time=slice(
             0,
             min(
@@ -325,11 +429,15 @@ sample = float(
                 sst.sizes["time"]
             )
         )
+
     )
+
     .mean(
         skipna=True
     )
+
     .compute()
+
 )
 
 
@@ -341,124 +449,165 @@ if sample > 100:
 
     sst = sst - 273.15
 
+
 else:
 
     print(
-        "\nSST already appears to be °C."
+        "\nSST already appears to be in °C."
     )
 
 
 # ==============================================================
-# 9. AREA-WEIGHTED REGIONAL DAILY MEAN SST
+# 8. COSINE-LATITUDE AREA WEIGHTS
+#
+# Weight = cos(latitude)
+# ==============================================================
+
+weights = xr.DataArray(
+
+    np.cos(
+
+        np.deg2rad(
+            sst.lat.values
+        )
+
+    ),
+
+    coords={
+        "lat": sst.lat
+    },
+
+    dims=[
+        "lat"
+    ]
+
+)
+
+
+# ==============================================================
+# 9. AREA-WEIGHTED REGIONAL DAILY SST
 # ==============================================================
 
 print(
-    "\nCalculating area-weighted regional daily SST..."
-)
 
-# --------------------------------------------------------------
-# Latitude weighting
-# --------------------------------------------------------------
+    "\nCalculating area-weighted "
+    "regional daily SST..."
 
-weights = np.cos(
-    np.deg2rad(
-        sst.lat
-    )
 )
 
 
-# --------------------------------------------------------------
-# Average longitude first.
-#
-# Then calculate cosine-latitude weighted mean across latitude.
-# --------------------------------------------------------------
+regional_daily_sst = (
 
-regional_daily = (
     sst
-    .mean(
-        dim="lon",
-        skipna=True
-    )
+
     .weighted(
         weights
     )
+
     .mean(
-        dim="lat",
+
+        dim=[
+            "lat",
+            "lon"
+        ],
+
         skipna=True
+
     )
+
+    .compute()
+
 )
-
-
-print(
-    "Loading regional daily SST..."
-)
-
-regional_daily = regional_daily.compute()
 
 
 # ==============================================================
-# 10. CREATE DAILY DATAFRAME
+# 10. CONVERT TO DATAFRAME
 # ==============================================================
 
-df = pd.DataFrame(
-    {
-        "date":
-            pd.DatetimeIndex(
-                regional_daily.time.values
-            ),
+df = pd.DataFrame({
 
-        "sst":
-            np.asarray(
-                regional_daily.values
-            ).reshape(-1)
-    }
-)
+    "date":
+        pd.DatetimeIndex(
+            regional_daily_sst.time.values
+        ),
+
+    "sst":
+        np.asarray(
+            regional_daily_sst.values,
+            dtype=float
+        )
+
+})
 
 
 df = df.dropna(
     subset=["sst"]
-)
-
-
-print(
-    f"\nValid daily regional SST values: {len(df):,}"
-)
+).copy()
 
 
 # ==============================================================
-# 11. MONTH
+# 11. ASSIGN SEASONS
 # ==============================================================
 
-df["month"] = (
-    df["date"].dt.month
-)
+month = df[
+    "date"
+].dt.month
 
 
-# ==============================================================
-# 12. ASSIGN SEASON
-# ==============================================================
+conditions = [
 
-df["season"] = (
-    df["month"]
-    .apply(
-        assign_season
-    )
-)
+    month.isin(
+        [12, 1, 2]
+    ),
 
+    month.isin(
+        [3, 4, 5]
+    ),
 
-if (
-    df["season"]
-    ==
-    "Unknown"
-).any():
+    month.isin(
+        [6, 7, 8]
+    ),
 
-    raise ValueError(
-        "Some dates could not be assigned to a season."
+    month.isin(
+        [9, 10, 11]
     )
 
+]
+
+
+choices = [
+
+    "DJF",
+    "MAM",
+    "JJA",
+    "SON"
+
+]
+
+
+df["season"] = np.select(
+
+    conditions,
+
+    choices,
+
+    default="Unknown"
+
+)
+
 
 # ==============================================================
-# 13. DEFINE SEASON YEAR
+# 12. ASSIGN SEASON YEAR
+#
+# December belongs to the following DJF year.
+#
+# Example:
+#
+# December 1981
+# January 1982
+# February 1982
+#
+# = DJF 1982
 # ==============================================================
 
 df["season_year"] = (
@@ -466,175 +615,164 @@ df["season_year"] = (
 )
 
 
-# --------------------------------------------------------------
-# DJF requires special treatment.
-#
-# December belongs to the NEXT year.
-#
-# Example:
-#
-# December 2009
-# January 2010
-# February 2010
-#
-# = DJF 2010
-# --------------------------------------------------------------
-
 december_mask = (
-    df["month"]
-    ==
-    12
+
+    df["date"].dt.month == 12
+
 )
+
 
 df.loc[
+
     december_mask,
+
     "season_year"
-] += 1
 
+] = (
 
-# ==============================================================
-# 14. COUNT VALID DAYS IN EACH SEASON
-# ==============================================================
+    df.loc[
 
-season_counts = (
-    df
-    .groupby(
-        [
-            "season_year",
-            "season"
-        ]
-    )
-    ["sst"]
-    .count()
-)
+        december_mask,
 
+        "season_year"
 
-# ==============================================================
-# 15. KEEP COMPLETE SEASONS
-#
-# Seasons contain about 90-92 days.
-#
-# >=89 prevents substantially incomplete seasons from entering
-# the calculation.
-# ==============================================================
-
-complete_seasons = (
-    season_counts[
-        season_counts >= 89
     ]
-    .index
+
+    + 1
+
 )
 
 
 # ==============================================================
-# 16. CALCULATE SEASONAL MEAN SST
+# 13. CHECK SEASON COMPLETENESS
 # ==============================================================
 
-seasonal_sst = (
+df["month"] = (
+    df["date"].dt.month
+)
+
+
+month_counts = (
+
     df
+
     .groupby(
         [
             "season_year",
             "season"
         ]
     )
-    ["sst"]
-    .mean()
-)
 
+    ["month"]
 
-seasonal_sst = seasonal_sst.loc[
-    seasonal_sst.index.isin(
-        complete_seasons
-    )
-]
+    .nunique()
 
-
-seasonal_sst = (
-    seasonal_sst
     .reset_index(
-        name="mean_sst"
+        name="n_months"
     )
+
 )
 
 
 # ==============================================================
-# 17. SELECT 1982-2024
+# 14. CALCULATE SEASONAL MEAN SST
 # ==============================================================
 
-seasonal_sst = seasonal_sst[
-    (
-        seasonal_sst["season_year"]
-        >=
-        START_YEAR
+seasonal = (
+
+    df
+
+    .groupby(
+        [
+            "season_year",
+            "season"
+        ],
+
+        as_index=False
+
     )
+
+    ["sst"]
+
+    .mean()
+
+)
+
+
+# --------------------------------------------------------------
+# Add month count
+# --------------------------------------------------------------
+
+seasonal = seasonal.merge(
+
+    month_counts,
+
+    on=[
+        "season_year",
+        "season"
+    ],
+
+    how="left"
+
+)
+
+
+# --------------------------------------------------------------
+# Keep only complete three-month seasons
+# --------------------------------------------------------------
+
+seasonal = seasonal[
+
+    seasonal["n_months"] == 3
+
+].copy()
+
+
+# --------------------------------------------------------------
+# Keep only 1982–2024
+# --------------------------------------------------------------
+
+seasonal = seasonal[
+
+    (
+        seasonal["season_year"]
+        >= START_YEAR
+    )
+
     &
+
     (
-        seasonal_sst["season_year"]
-        <=
-        END_YEAR
+        seasonal["season_year"]
+        <= END_YEAR
     )
+
 ].copy()
 
 
 # ==============================================================
-# 18. SEASON ORDER
+# 15. SEASON ORDER
 # ==============================================================
 
 season_order = [
+
     "DJF",
     "MAM",
     "JJA",
     "SON"
+
 ]
 
 
 # ==============================================================
-# 19. PRINT RESULTS
-# ==============================================================
-
-seasonal_table = (
-    seasonal_sst
-    .pivot(
-        index="season_year",
-        columns="season",
-        values="mean_sst"
-    )
-    .reindex(
-        columns=season_order
-    )
-)
-
-
-print(
-    "\n"
-    + "=" * 80
-)
-
-print(
-    "SEASONAL MEAN SST"
-)
-
-print(
-    "=" * 80
-)
-
-print(
-    seasonal_table.round(3)
-)
-
-
-# ==============================================================
-# 20. CHECK EACH SEASON
+# 16. CHECK DATA COVERAGE
 # ==============================================================
 
 print(
-    "\n"
-    + "=" * 80
+    "\n" + "=" * 80
 )
 
 print(
-    "AVAILABLE SEASONS"
+    "SEASONAL DATA COVERAGE"
 )
 
 print(
@@ -644,322 +782,1052 @@ print(
 
 for season in season_order:
 
-    temp = seasonal_sst[
-        seasonal_sst["season"]
-        ==
-        season
-    ]
+    temp = seasonal[
+
+        seasonal["season"]
+        == season
+
+    ].copy()
+
+
+    print(
+        f"\n{season}:"
+    )
+
+
+    print(
+        f"  Number of seasonal means: "
+        f"{len(temp)}"
+    )
+
 
     if len(temp) > 0:
 
         print(
-            f"{season}: "
-            f"{int(temp['season_year'].min())}-"
-            f"{int(temp['season_year'].max())} "
-            f"({len(temp)} seasons)"
+
+            f"  Period: "
+            f"{int(temp['season_year'].min())}"
+            f"–"
+            f"{int(temp['season_year'].max())}"
+
         )
 
 
 # ==============================================================
-# 21. CALCULATE COMMON Y-AXIS RANGE
+# 17. FUNCTION TO CALCULATE LINEAR TREND
 #
-# IMPORTANT:
+# Returns:
 #
-# All four panels use exactly the same scale.
-#
-# This means a temperature difference visible between DJF and
-# SON, for example, is a genuine difference rather than an
-# artifact caused by different y-axis ranges.
+# - °C/year
+# - °C/decade
+# - 95% confidence interval
+# - p-value
+# - R²
 # ==============================================================
 
-all_sst = (
-    seasonal_sst[
-        "mean_sst"
-    ]
-    .to_numpy()
-)
+def calculate_trend(data):
+
+    data = data.dropna(
+
+        subset=[
+            "season_year",
+            "sst"
+        ]
+
+    ).copy()
 
 
-# Use whole-degree tick marks
-tick_min = np.floor(
-    np.nanmin(
-        all_sst
+    x = data[
+        "season_year"
+    ].values.astype(float)
+
+
+    y = data[
+        "sst"
+    ].values.astype(float)
+
+
+    if len(x) < 3:
+
+        raise ValueError(
+
+            "At least 3 observations are required "
+            "to calculate the trend."
+
+        )
+
+
+    # ----------------------------------------------------------
+    # Linear regression
+    # ----------------------------------------------------------
+
+    regression = linregress(
+        x,
+        y
     )
-)
 
-tick_max = np.ceil(
-    np.nanmax(
-        all_sst
+
+    slope_year = (
+        regression.slope
     )
-)
 
 
-# Give a little visual space above and below
-y_min = tick_min - 0.25
-y_max = tick_max + 0.75
+    intercept = (
+        regression.intercept
+    )
 
 
-# Explicit y-axis ticks
-y_ticks = np.arange(
-    tick_min,
-    tick_max + 1,
-    1.0
-)
+    p_value = (
+        regression.pvalue
+    )
+
+
+    stderr_year = (
+        regression.stderr
+    )
+
+
+    r_squared = (
+        regression.rvalue ** 2
+    )
+
+
+    # ----------------------------------------------------------
+    # Convert °C/year to °C/decade
+    # ----------------------------------------------------------
+
+    slope_decade = (
+        slope_year * 10.0
+    )
+
+
+    stderr_decade = (
+        stderr_year * 10.0
+    )
+
+
+    # ----------------------------------------------------------
+    # 95% confidence interval
+    # ----------------------------------------------------------
+
+    n = len(x)
+
+    degrees_freedom = (
+        n - 2
+    )
+
+
+    t_critical = student_t.ppf(
+
+        0.975,
+
+        degrees_freedom
+
+    )
+
+
+    ci_lower = (
+
+        slope_decade
+
+        -
+
+        t_critical
+        *
+        stderr_decade
+
+    )
+
+
+    ci_upper = (
+
+        slope_decade
+
+        +
+
+        t_critical
+        *
+        stderr_decade
+
+    )
+
+
+    return {
+
+        "n":
+            n,
+
+        "slope_year":
+            slope_year,
+
+        "slope_decade":
+            slope_decade,
+
+        "intercept":
+            intercept,
+
+        "p_value":
+            p_value,
+
+        "stderr_decade":
+            stderr_decade,
+
+        "ci_lower":
+            ci_lower,
+
+        "ci_upper":
+            ci_upper,
+
+        "r_squared":
+            r_squared
+
+    }
+
+
+# ==============================================================
+# 18. CALCULATE TREND FOR EACH SEASON
+# ==============================================================
+
+trend_results = {}
 
 
 print(
-    f"\nCommon plot range: "
-    f"{y_min:.2f} to {y_max:.2f} °C"
+    "\n" + "=" * 80
+)
+
+print(
+    "SEASONAL SST TREND RESULTS"
+)
+
+print(
+    "=" * 80
 )
 
 
+for season in season_order:
+
+    temp = seasonal[
+
+        seasonal["season"]
+        == season
+
+    ].copy()
+
+
+    temp = temp.sort_values(
+        "season_year"
+    )
+
+
+    result = calculate_trend(
+        temp
+    )
+
+
+    trend_results[
+        season
+    ] = result
+
+
+    if result["p_value"] < 0.05:
+
+        significance = (
+            "STATISTICALLY SIGNIFICANT"
+        )
+
+    else:
+
+        significance = (
+            "NOT STATISTICALLY SIGNIFICANT"
+        )
+
+
+    print(
+        f"\n{season}"
+    )
+
+    print(
+        "-" * 60
+    )
+
+
+    print(
+
+        f"Trend: "
+        f"{result['slope_decade']:+.3f} "
+        f"°C/decade"
+
+    )
+
+
+    print(
+
+        f"95% CI: "
+        f"{result['ci_lower']:+.3f} to "
+        f"{result['ci_upper']:+.3f} "
+        f"°C/decade"
+
+    )
+
+
+    print(
+
+        f"p-value: "
+        f"{result['p_value']:.8f}"
+
+    )
+
+
+    print(
+
+        f"R²: "
+        f"{result['r_squared']:.3f}"
+
+    )
+
+
+    print(
+
+        f"Result: "
+        f"{significance}"
+
+    )
+
+
 # ==============================================================
-# 22. CREATE FOUR-PANEL FIGURE
-#
-# IMPORTANT:
-#
-# sharey=False is deliberate here.
-#
-# We manually give every plot the SAME ylim and yticks.
-#
-# This retains scientific comparability while ensuring that
-# MAM and SON also display their y-axis temperature labels.
+# 19. CREATE FIGURE
 # ==============================================================
 
-fig, axes = plt.subplots(
-    2,
-    2,
+fig, ax = plt.subplots(
+
     figsize=(
         14,
         8
-    ),
-    sharex=True,
-    sharey=False
+    )
+
 )
 
 
-axes = axes.flatten()
+# ==============================================================
+# 20. STORE SEASON COLORS
+# ==============================================================
 
-
-panel_labels = [
-    "(a)",
-    "(b)",
-    "(c)",
-    "(d)"
-]
+season_colors = {}
 
 
 # ==============================================================
-# 23. YEAR TICKS
+# 21. PLOT ALL FOUR SEASONS
+#
+# Solid:
+#   Observed seasonal mean SST
+#
+# Dashed:
+#   Linear trend
+# ==============================================================
+
+for season in season_order:
+
+    temp = seasonal[
+
+        seasonal["season"]
+        == season
+
+    ].copy()
+
+
+    temp = temp.sort_values(
+        "season_year"
+    )
+
+
+    years = temp[
+        "season_year"
+    ].values.astype(float)
+
+
+    sst_values = temp[
+        "sst"
+    ].values.astype(float)
+
+
+    result = trend_results[
+        season
+    ]
+
+
+    # ----------------------------------------------------------
+    # Observed seasonal mean SST
+    # ----------------------------------------------------------
+
+    observed_line = ax.plot(
+
+        years,
+
+        sst_values,
+
+        marker="o",
+
+        markersize=3.5,
+
+        linewidth=1.4,
+
+        alpha=0.82
+
+    )[0]
+
+
+    # ----------------------------------------------------------
+    # Save line color
+    # ----------------------------------------------------------
+
+    line_color = (
+        observed_line.get_color()
+    )
+
+
+    season_colors[
+        season
+    ] = line_color
+
+
+    # ----------------------------------------------------------
+    # Fitted linear trend
+    # ----------------------------------------------------------
+
+    fitted_sst = (
+
+        result[
+            "intercept"
+        ]
+
+        +
+
+        result[
+            "slope_year"
+        ]
+
+        *
+        years
+
+    )
+
+
+    ax.plot(
+
+        years,
+
+        fitted_sst,
+
+        linestyle="--",
+
+        linewidth=2.2,
+
+        color=line_color,
+
+        alpha=0.95
+
+    )
+
+
+# ==============================================================
+# 22. DIRECT SEASON LABELS
+#
+# Labels are attached to the fitted trend lines rather than
+# the final observed SST point.
+# ==============================================================
+
+LABEL_YEAR = (
+    END_YEAR + 0.7
+)
+
+
+# --------------------------------------------------------------
+# Small vertical offsets for visual separation
+# ==============================================================
+
+label_offsets = {
+
+    "DJF": +0.08,
+
+    "MAM": -0.08,
+
+    "JJA": -0.03,
+
+    "SON": +0.03
+
+}
+
+
+for season in season_order:
+
+    result = trend_results[
+        season
+    ]
+
+
+    # ----------------------------------------------------------
+    # Fitted SST at final analysis year
+    # ----------------------------------------------------------
+
+    fitted_end = (
+
+        result[
+            "intercept"
+        ]
+
+        +
+
+        result[
+            "slope_year"
+        ]
+
+        *
+        END_YEAR
+
+    )
+
+
+    # ----------------------------------------------------------
+    # Add direct season label
+    # ----------------------------------------------------------
+
+    ax.text(
+
+        LABEL_YEAR,
+
+        fitted_end
+        +
+        label_offsets[
+            season
+        ],
+
+        season,
+
+        color=season_colors[
+            season
+        ],
+
+        fontsize=11,
+
+        fontweight="bold",
+
+        verticalalignment="center",
+
+        horizontalalignment="left",
+
+        clip_on=False
+
+    )
+
+
+# ==============================================================
+# 23. X-AXIS RANGE
+#
+# Extra space is included on the right for direct labels.
+# ==============================================================
+
+ax.set_xlim(
+
+    START_YEAR - 1,
+
+    END_YEAR + 3
+
+)
+
+
+# ==============================================================
+# 24. Y-AXIS RANGE
+# ==============================================================
+
+all_sst = seasonal[
+    "sst"
+].values
+
+
+y_min = (
+
+    np.floor(
+        np.nanmin(all_sst)
+    )
+
+    - 0.25
+
+)
+
+
+y_max = (
+
+    np.ceil(
+        np.nanmax(all_sst)
+    )
+
+    + 0.25
+
+)
+
+
+ax.set_ylim(
+
+    y_min,
+
+    y_max
+
+)
+
+
+# ==============================================================
+# 25. YEAR TICKS
 # ==============================================================
 
 year_ticks = np.arange(
-    1982,
-    2025,
-    5
+
+    START_YEAR,
+
+    END_YEAR + 1,
+
+    4
+
+)
+
+
+ax.set_xticks(
+    year_ticks
 )
 
 
 # ==============================================================
-# 24. PLOT ALL FOUR SEASONS
+# 26. AXIS LABELS
 # ==============================================================
 
-for ax, season, panel in zip(
-    axes,
-    season_order,
-    panel_labels
+ax.set_xlabel(
+
+    "Year",
+
+    fontsize=12,
+
+    fontweight="bold"
+
+)
+
+
+ax.set_ylabel(
+
+    "Seasonal Mean SST (°C)",
+
+    fontsize=12,
+
+    fontweight="bold"
+
+)
+
+
+# ==============================================================
+# 27. TITLE
+# ==============================================================
+
+ax.set_title(
+
+    "Seasonal Mean SST and Linear Trends in the "
+    "Tropical North East Atlantic (1982–2024)",
+
+    fontsize=15,
+
+    fontweight="bold",
+
+    pad=16
+
+)
+
+
+# ==============================================================
+# 28. GRID
+# ==============================================================
+
+ax.grid(
+
+    True,
+
+    linestyle="--",
+
+    linewidth=0.5,
+
+    alpha=0.30
+
+)
+
+
+# ==============================================================
+# 29. CREATE CLEAN STATISTICS BOX
+#
+# Instead of repeating:
+#
+# p < 0.001
+# p < 0.001
+# p < 0.001
+# p < 0.001
+#
+# the individual lines contain only:
+#
+# trend + 95% CI
+#
+# If all trends have p < 0.001, this is stated once.
+# ==============================================================
+
+statistics_lines = []
+
+
+for season in season_order:
+
+    result = trend_results[
+        season
+    ]
+
+
+    line = (
+
+        f"{season}: "
+        f"{result['slope_decade']:+.2f} °C/decade "
+        f"(95% CI: "
+        f"{result['ci_lower']:+.2f} to "
+        f"{result['ci_upper']:+.2f})"
+
+    )
+
+
+    statistics_lines.append(
+        line
+    )
+
+
+statistics_text = "\n".join(
+    statistics_lines
+)
+
+
+# ==============================================================
+# 30. ADD P-VALUE INFORMATION ONCE
+# ==============================================================
+
+all_p_values = [
+
+    trend_results[
+        season
+    ][
+        "p_value"
+    ]
+
+    for season in season_order
+
+]
+
+
+# --------------------------------------------------------------
+# Case 1:
+# All seasonal trends have p < 0.001
+# --------------------------------------------------------------
+
+if all(
+
+    p < 0.001
+    for p in all_p_values
+
 ):
 
-    # ----------------------------------------------------------
-    # Extract season
-    # ----------------------------------------------------------
+    statistics_text += (
 
-    season_data = (
-        seasonal_sst[
-            seasonal_sst["season"]
-            ==
+        "\nAll seasonal trends: p < 0.001"
+
+    )
+
+
+# --------------------------------------------------------------
+# Case 2:
+# All are significant at p < 0.05,
+# but not all reach p < 0.001
+# --------------------------------------------------------------
+
+elif all(
+
+    p < 0.05
+    for p in all_p_values
+
+):
+
+    statistics_text += (
+
+        "\nAll seasonal trends: p < 0.05"
+
+    )
+
+
+# --------------------------------------------------------------
+# Case 3:
+# Mixed significance.
+#
+# In this situation, show the individual p-values because
+# summarizing them with one statement would be misleading.
+# --------------------------------------------------------------
+
+else:
+
+    statistics_text += (
+        "\n"
+    )
+
+
+    for season in season_order:
+
+        p = trend_results[
             season
+        ][
+            "p_value"
         ]
-        .sort_values(
-            "season_year"
+
+
+        if p < 0.001:
+
+            p_text = (
+                "p < 0.001"
+            )
+
+        else:
+
+            p_text = (
+                f"p = {p:.3f}"
+            )
+
+
+        statistics_text += (
+
+            f"\n{season}: "
+            f"{p_text}"
+
         )
-    )
-
-
-    years = (
-        season_data[
-            "season_year"
-        ]
-        .to_numpy()
-    )
-
-
-    mean_sst = (
-        season_data[
-            "mean_sst"
-        ]
-        .to_numpy()
-    )
-
-
-    # ----------------------------------------------------------
-    # Seasonal mean SST
-    # ----------------------------------------------------------
-
-    ax.plot(
-        years,
-        mean_sst,
-        linewidth=1.8
-    )
-
-
-    # ----------------------------------------------------------
-    # Panel title
-    # ----------------------------------------------------------
-
-    ax.set_title(
-        f"{panel} {season}",
-        fontsize=13,
-        fontweight="bold",
-        pad=10
-    )
-
-
-    # ----------------------------------------------------------
-    # X axis
-    # ----------------------------------------------------------
-
-    ax.set_xlim(
-        START_YEAR,
-        END_YEAR
-    )
-
-    ax.set_xticks(
-        year_ticks
-    )
-
-
-    # ----------------------------------------------------------
-    # Y axis
-    #
-    # SAME range on ALL four panels
-    # ----------------------------------------------------------
-
-    ax.set_ylim(
-        y_min,
-        y_max
-    )
-
-    ax.set_yticks(
-        y_ticks
-    )
-
-
-    # ----------------------------------------------------------
-    # IMPORTANT FIX
-    #
-    # Explicitly show numerical SST tick labels on every panel.
-    # This fixes MAM and SON.
-    # ----------------------------------------------------------
-
-    ax.tick_params(
-        axis="y",
-        labelleft=True,
-        labelsize=10
-    )
-
-    ax.tick_params(
-        axis="x",
-        labelsize=10
-    )
-
-
-    # ----------------------------------------------------------
-    # Y-axis label on EVERY panel
-    # ----------------------------------------------------------
-
-    ax.set_ylabel(
-        "Mean SST (°C)",
-        fontsize=11,
-        fontweight="bold"
-    )
-
-
-    # ----------------------------------------------------------
-    # Grid
-    # ----------------------------------------------------------
-
-    ax.grid(
-        True,
-        linestyle="--",
-        linewidth=0.7,
-        alpha=0.30
-    )
 
 
 # ==============================================================
-# 25. X-AXIS LABELS
-#
-# Put Year on the bottom panels.
+# 31. ADD STATISTICS BOX TO FIGURE
 # ==============================================================
 
-axes[2].set_xlabel(
-    "Year",
-    fontsize=11,
-    fontweight="bold"
-)
+ax.text(
 
-axes[3].set_xlabel(
-    "Year",
-    fontsize=11,
-    fontweight="bold"
+    0.985,
+
+    0.025,
+
+    statistics_text,
+
+    transform=ax.transAxes,
+
+    fontsize=9.5,
+
+    verticalalignment="bottom",
+
+    horizontalalignment="right",
+
+    bbox=dict(
+
+        boxstyle="round,pad=0.55",
+
+        facecolor="white",
+
+        edgecolor="0.50",
+
+        alpha=0.92
+
+    )
+
 )
 
 
 # ==============================================================
-# 26. OVERALL TITLE
+# 32. TICK APPEARANCE
 # ==============================================================
 
-fig.suptitle(
-    "Seasonal Mean SST in the Tropical North East Atlantic "
-    "(1982–2024)",
-    fontsize=16,
-    fontweight="bold",
-    y=0.98
+ax.tick_params(
+
+    axis="both",
+
+    labelsize=10
+
 )
 
 
 # ==============================================================
-# 27. ADJUST PANEL SPACING
-#
-# This provides enough room for the MAM and SON y-axis labels
-# without making the overall figure unnecessarily large.
+# 33. FIGURE LAYOUT
 # ==============================================================
 
-fig.subplots_adjust(
+plt.subplots_adjust(
+
     left=0.08,
-    right=0.98,
-    bottom=0.09,
-    top=0.89,
-    wspace=0.18,
-    hspace=0.25
+
+    right=0.94,
+
+    bottom=0.10,
+
+    top=0.90
+
 )
 
 
 # ==============================================================
-# 28. SHOW FIGURE
+# 34. DISPLAY
 # ==============================================================
 
 plt.show()
 
 
 # ==============================================================
-# 29. CLOSE DATASET
+# 35. FINAL PRINTED SUMMARY
+# ==============================================================
+
+print(
+    "\n" + "=" * 80
+)
+
+print(
+    "FINAL SEASONAL SST TREND SUMMARY"
+)
+
+print(
+    "=" * 80
+)
+
+
+for season in season_order:
+
+    result = trend_results[
+        season
+    ]
+
+
+    if result["p_value"] < 0.05:
+
+        significance = (
+            "SIGNIFICANT"
+        )
+
+    else:
+
+        significance = (
+            "NOT SIGNIFICANT"
+        )
+
+
+    print(
+        f"\n{season}"
+    )
+
+
+    print(
+
+        f"  Trend: "
+        f"{result['slope_decade']:+.3f} "
+        f"°C/decade"
+
+    )
+
+
+    print(
+
+        f"  95% CI: "
+        f"{result['ci_lower']:+.3f} to "
+        f"{result['ci_upper']:+.3f} "
+        f"°C/decade"
+
+    )
+
+
+    print(
+
+        f"  p-value: "
+        f"{result['p_value']:.8f}"
+
+    )
+
+
+    print(
+
+        f"  R²: "
+        f"{result['r_squared']:.3f}"
+
+    )
+
+
+    print(
+
+        f"  Statistical result: "
+        f"{significance}"
+
+    )
+
+
+# ==============================================================
+# 36. SIMPLE INTERPRETATION
+# ==============================================================
+
+print(
+    "\n" + "=" * 80
+)
+
+print(
+    "INTERPRETATION"
+)
+
+print(
+    "=" * 80
+)
+
+
+print(
+
+    "\nThe trend for each season represents the "
+    "change in regional seasonal mean SST per decade "
+    "during 1982–2024."
+
+)
+
+
+print(
+
+    "The 95% confidence interval represents the "
+    "uncertainty around each estimated trend."
+
+)
+
+
+if all(
+
+    p < 0.001
+    for p in all_p_values
+
+):
+
+    print(
+
+        "\nAll four seasonal SST trends are "
+        "statistically significant (p < 0.001)."
+
+    )
+
+
+print(
+
+    "\nThis analysis does not test whether the trends "
+    "are statistically different from one season to another."
+
+)
+
+
+# ==============================================================
+# 37. CLOSE DATASET
 # ==============================================================
 
 ds.close()
 
 
 print(
-    "\nSeasonal SST analysis completed successfully."
+
+    "\nSeasonal SST trend analysis completed successfully."
+
 )
