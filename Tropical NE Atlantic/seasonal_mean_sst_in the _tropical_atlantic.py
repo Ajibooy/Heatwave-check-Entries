@@ -27,16 +27,6 @@
 #         trend + 95% CI
 #   - If all seasonal trends have p < 0.001,
 #         p < 0.001 is stated only once
-#
-# NO:
-#   - statsmodels
-#   - pairwise seasonal slope comparison
-#   - overall seasonal slope comparison
-#   - CSV output
-#   - saved figure
-# ==============================================================
-
-
 # ==============================================================
 # 0. IMPORT PACKAGES
 # ==============================================================
